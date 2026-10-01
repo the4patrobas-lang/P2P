@@ -1,0 +1,44 @@
+create extension if not exists "pgcrypto";
+
+create table public.transactions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  date date not null,
+  credited numeric(18,2) not null default 0,
+  usdt numeric(18,2) not null default 0,
+  google_rate numeric(18,2) not null default 0,
+  binance_rate numeric(18,2) not null default 0,
+  bonus25 numeric(18,2) not null default 0,
+  net_profit numeric(18,2) not null default 0,
+  created_at timestamptz not null default now()
+);
+
+alter table public.transactions enable row level security;
+
+create policy "Users can view their own transactions"
+on public.transactions
+for select
+using (auth.uid() = user_id);
+
+create policy "Users can insert their own transactions"
+on public.transactions
+for insert
+with check (auth.uid() = user_id);
+
+create policy "Users can update their own transactions"
+on public.transactions
+for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "Users can delete their own transactions"
+on public.transactions
+for delete
+using (auth.uid() = user_id);
+
+create index if not exists idx_transactions_user_id_date
+on public.transactions (user_id, date desc);
+
+create index if not exists idx_transactions_user_id_created_at
+on public.transactions (user_id, created_at desc);
+

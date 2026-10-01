@@ -1,0 +1,11 @@
+{
+  "name": "p2p-ledger",
+  "version": "1.0.0",
+  "description": "TZS-USDT-INR exchange ledger with Supabase database sync",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

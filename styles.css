@@ -1,0 +1,27 @@
+body {
+  font-family: 'Inter', sans-serif;
+}
+
+.gauge-container {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  margin: 0 auto;
+}
+
+.gauge-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.auth-tab.active {
+  background: #2563eb;
+  color: white;
+}
+
+.auth-tab {
+  color: #cbd5e1;
+}
