@@ -1,645 +1,342 @@
-// ===== App config =====
-const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
-
-const useCloudStorage = SUPABASE_URL && SUPABASE_URL !== 'https://YOUR-PROJECT.supabase.co' && SUPABASE_ANON_KEY && SUPABASE_ANON_KEY !== 'YOUR-ANON-KEY';
-
-let currentUser = null;
-let transactions = [];
-let currentGoogleFxRate = 86.42;
-let chartInstance = null;
-let gaugeTotalChart = null;
-let gaugeAvgChart = null;
-let activeChartTab = 'monthly';
-let isUsingCloud = false;
-let supabase = null;
-
-// ===== Init =====
-document.getElementById('tx-date').valueAsDate = new Date();
-
-if (useCloudStorage && window.supabase) {
-  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-}
-
-const authLoginTab = document.getElementById('auth-login-tab');
-const authSignupTab = document.getElementById('auth-signup-tab');
-const authSubmitBtn = document.getElementById('auth-submit-btn');
-const authForm = document.getElementById('auth-form');
-const authShell = document.getElementById('auth-shell');
-const appShell = document.getElementById('app-shell');
-
-let authMode = 'login';
-
-function setAuthMode(mode) {
-  authMode = mode;
-  const isLogin = mode === 'login';
-
-  authLoginTab.classList.toggle('active', isLogin);
-  authSignupTab.classList.toggle('active', !isLogin);
-  authLoginTab.classList.toggle('text-white', isLogin);
-  authLoginTab.classList.toggle('text-slate-400', !isLogin);
-  authSignupTab.classList.toggle('text-white', !isLogin);
-  authSignupTab.classList.toggle('text-slate-400', isLogin);
-
-  authSubmitBtn.innerHTML = isLogin ? '<i class="fas fa-sign-in-alt"></i> <span>Login</span>' : '<i class="fas fa-user-plus"></i> <span>Create Account</span>';
-}
-
-authLoginTab.addEventListener('click', () => setAuthMode('login'));
-authSignupTab.addEventListener('click', () => setAuthMode('signup'));
-
-authForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-
-  const email = document.getElementById('auth-email').value.trim();
-  const password = document.getElementById('auth-password').value.trim();
-
-  if (!email || !password) {
-    showToast('Please fill in your email and password.', 'error');
-    return;
-  }
-
-  if (!supabase && !useCloudStorage) {
-    showToast('Cloud storage is not configured yet. Use demo mode or add Supabase credentials in app.js.', 'info');
-    return;
-  }
-
-  try {
-    if (authMode === 'login') {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      currentUser = data.user;
-      showToast('Logged in successfully.', 'success');
-    } else {
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) throw error;
-      currentUser = data.user;
-      showToast('Account created. Check your email to confirm sign-in.', 'success');
-    }
-
-    await initializeSession();
-  } catch (error) {
-    console.error(error);
-    showToast(error.message || 'Authentication failed.', 'error');
-  }
-});
-
-document.getElementById('demo-mode-btn').addEventListener('click', () => {
-  currentUser = { id: 'demo-user', email: 'demo@local' };
-  isUsingCloud = false;
-  initializeSession();
-});
-
-async function initializeSession() {
-  if (!supabase || !currentUser) {
-    // fallback local mode
-    const localData = JSON.parse(localStorage.getItem('tzs_usdt_transactions_demo')) || [];
-    transactions = localData;
-    isUsingCloud = false;
-    showApp();
-    renderAll();
-    return;
-  }
-
-  isUsingCloud = true;
-  const { data: transactionData, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .eq('user_id', currentUser.id)
-    .order('date', { ascending: false });
-
-  if (error) {
-    console.error(error);
-    showToast('Could not load cloud data. Falling back to local data.', 'info');
-    transactions = JSON.parse(localStorage.getItem(`tzs_usdt_transactions_${currentUser.id}`)) || [];
-  } else {
-    transactions = (transactionData || []).map((tx) => ({
-      id: tx.id,
-      date: tx.date,
-      credited: Number(tx.credited),
-      usdt: Number(tx.usdt),
-      googleRate: Number(tx.google_rate),
-      binanceRate: Number(tx.binance_rate),
-      bonus25: Number(tx.bonus25),
-      netProfit: Number(tx.net_profit)
-    }));
-    localStorage.setItem(`tzs_usdt_transactions_${currentUser.id}`, JSON.stringify(transactions));
-  }
-
-  showApp();
-  renderAll();
-}
-
-async function logoutUser() {
-  if (supabase && currentUser) {
-    await supabase.auth.signOut();
-  }
-
-  currentUser = null;
-  transactions = [];
-  authShell.classList.remove('hidden');
-  appShell.classList.add('hidden');
-  authForm.reset();
-  showToast('Logged out successfully.', 'success');
-}
-
-function showApp() {
-  authShell.classList.add('hidden');
-  appShell.classList.remove('hidden');
-
-  const label = currentUser ? currentUser.email || 'Account user' : 'Demo mode';
-  const userTag = document.getElementById('user-tag');
-  userTag.innerText = label;
-  userTag.classList.remove('hidden');
-}
-
-function normalizeTransactions(list = []) {
-  return list.map((tx) => ({
-    id: tx.id || Date.now() + Math.random(),
-    date: tx.date,
-    credited: Number(tx.credited || 0),
-    usdt: Number(tx.usdt || 0),
-    googleRate: Number(tx.googleRate || tx.google_rate || 0),
-    binanceRate: Number(tx.binanceRate || tx.binance_rate || 0),
-    bonus25: Number(tx.bonus25 || 0),
-    netProfit: Number(tx.netProfit || tx.net_profit || 0)
-  }));
-}
-
-function persistTransactions() {
-  if (isUsingCloud && currentUser && supabase) {
-    return;
-  }
-
-  const key = currentUser ? `tzs_usdt_transactions_${currentUser.id}` : 'tzs_usdt_transactions_demo';
-  localStorage.setItem(key, JSON.stringify(transactions));
-}
-
-async function syncTransactionsToCloud() {
-  if (!isUsingCloud || !currentUser || !supabase) return;
-
-  const rows = transactions.map((tx) => ({
-    id: tx.id,
-    user_id: currentUser.id,
-    date: tx.date,
-    credited: tx.credited,
-    usdt: tx.usdt,
-    google_rate: tx.googleRate,
-    binance_rate: tx.binanceRate,
-    bonus25: tx.bonus25,
-    net_profit: tx.netProfit
-  }));
-
-  const { error } = await supabase.from('transactions').upsert(rows, { onConflict: 'id' });
-  if (error) {
-    console.error(error);
-    showToast('Cloud sync failed. Local data remains intact.', 'error');
-  }
-}
-
-async function fetchLiveGoogleRate() {
-  const display = document.getElementById('live-fx-display');
-  display.innerText = 'Updating...';
-
-  try {
-    const res = await fetch('https://open.er-api.com/v6/latest/USD');
-    const data = await res.json();
-    if (data && data.rates && data.rates.INR) {
-      currentGoogleFxRate = parseFloat(data.rates.INR.toFixed(2));
-      display.innerText = `₹${currentGoogleFxRate} / USDT`;
-      document.getElementById('tx-google-cost').value = currentGoogleFxRate;
-      calculateLiveProfitPreview();
-      showToast(`Google FX Rate updated: ₹${currentGoogleFxRate}`, 'success');
-    } else {
-      throw new Error('Invalid rate response');
-    }
-  } catch (err) {
-    display.innerText = `₹${currentGoogleFxRate} (Fallback)`;
-    document.getElementById('tx-google-cost').value = currentGoogleFxRate;
-    showToast('Using standard Google FX rate', 'info');
-  }
-}
-
-function calculateLiveProfitPreview() {
-  const credited = parseFloat(document.getElementById('tx-credited').value) || 0;
-  const usdt = parseFloat(document.getElementById('tx-usdt').value) || 0;
-  const googleRate = parseFloat(document.getElementById('tx-google-cost').value) || 0;
-  const binanceRate = parseFloat(document.getElementById('tx-binance-sell').value) || 0;
-
-  let baseMarginUSDT = 0;
-  if (binanceRate > 0 && googleRate > 0 && usdt > 0) {
-    baseMarginUSDT = (usdt * (binanceRate - googleRate)) / binanceRate;
-  }
-
-  let bonusUSDT = 0;
-  if (credited > 100000 && usdt > 0) {
-    bonusUSDT = usdt * 0.025;
-  }
-
-  const netProfit = baseMarginUSDT + bonusUSDT;
-  document.getElementById('prev-margin').innerText = `${baseMarginUSDT.toFixed(2)} USDT`;
-  document.getElementById('prev-bonus').innerText = `${bonusUSDT.toFixed(2)} USDT`;
-  document.getElementById('prev-total-profit').innerText = `${netProfit.toFixed(2)} USDT`;
-}
-
-function handleFormSubmit(e) {
-  e.preventDefault();
-
-  const date = document.getElementById('tx-date').value;
-  const credited = parseFloat(document.getElementById('tx-credited').value);
-  const usdt = parseFloat(document.getElementById('tx-usdt').value);
-  const googleRate = parseFloat(document.getElementById('tx-google-cost').value);
-  const binanceRate = parseFloat(document.getElementById('tx-binance-sell').value);
-
-  if (!date || isNaN(credited) || isNaN(usdt) || isNaN(googleRate) || isNaN(binanceRate)) {
-    showToast('Please fill out all required fields properly.', 'error');
-    return;
-  }
-
-  const baseProfit = (usdt * (binanceRate - googleRate)) / binanceRate;
-  const bonus25 = credited > 100000 ? usdt * 0.025 : 0;
-  const netProfit = baseProfit + bonus25;
-
-  const newTx = {
-    id: Date.now(),
-    date,
-    credited,
-    usdt,
-    googleRate,
-    binanceRate,
-    bonus25,
-    netProfit
-  };
-
-  transactions.unshift(newTx);
-  transactions = normalizeTransactions(transactions);
-  saveAndRender();
-
-  document.getElementById('tx-credited').value = '';
-  document.getElementById('tx-usdt').value = '';
-  document.getElementById('tx-binance-sell').value = '';
-  calculateLiveProfitPreview();
-
-  showToast('Transaction logged successfully!', 'success');
-}
-
-function saveAndRender() {
-  persistTransactions();
-  if (isUsingCloud && currentUser && supabase) {
-    syncTransactionsToCloud();
-  }
-  renderAll();
-}
-
-async function deleteTx(id) {
-  if (confirm('Are you sure you want to delete this transaction entry?')) {
-    transactions = transactions.filter((t) => t.id !== id);
-    if (isUsingCloud && supabase && currentUser) {
-      const { error } = await supabase.from('transactions').delete().eq('id', id).eq('user_id', currentUser.id);
-      if (error) {
-        console.error(error);
-        showToast('Cloud delete failed.', 'error');
-      }
-    }
-    saveAndRender();
-    showToast('Transaction deleted.', 'info');
-  }
-}
-
-function clearAllData() {
-  if (confirm('Are you sure you want to clear ALL transaction ledger data?')) {
-    transactions = [];
-    saveAndRender();
-    showToast('All transactions cleared.', 'info');
-  }
-}
-
-function renderAll() {
-  renderKPIsAndGauges();
-  renderLedgerTable();
-  renderSummaryTables();
-  renderPerformanceChart();
-}
-
-function renderKPIsAndGauges() {
-  const totalCredited = transactions.reduce((acc, t) => acc + t.credited, 0);
-  const totalUSDT = transactions.reduce((acc, t) => acc + t.usdt, 0);
-  const totalBonus = transactions.reduce((acc, t) => acc + (t.bonus25 || 0), 0);
-  const qualifiedCount = transactions.filter((t) => t.credited > 100000).length;
-  const totalNetProfit = transactions.reduce((acc, t) => acc + t.netProfit, 0);
-
-  const uniqueMonths = new Set(transactions.map((t) => t.date.substring(0, 7)));
-  const monthCount = uniqueMonths.size || 1;
-  const avgMonthlyProfit = totalNetProfit / monthCount;
-
-  document.getElementById('kpi-total-credited').innerText = `${totalCredited.toLocaleString()} TZS`;
-  document.getElementById('kpi-tx-count').innerText = transactions.length;
-  document.getElementById('kpi-total-usdt').innerText = totalUSDT.toFixed(2);
-  document.getElementById('kpi-bonus-profit').innerText = `${totalBonus.toFixed(2)} USDT`;
-  document.getElementById('kpi-qualified-count').innerText = qualifiedCount;
-  document.getElementById('gauge-total-val').innerText = totalNetProfit.toFixed(2);
-  document.getElementById('gauge-avg-val').innerText = avgMonthlyProfit.toFixed(2);
-
-  updateGaugeChart('gaugeTotalProfit', totalNetProfit, 1000, '#10b981', gaugeTotalChart, chart => gaugeTotalChart = chart);
-  updateGaugeChart('gaugeAvgMonthlyProfit', avgMonthlyProfit, 300, '#f59e0b', gaugeAvgChart, chart => gaugeAvgChart = chart);
-}
-
-function updateGaugeChart(canvasId, value, targetMax, color, chartVar, setChartVar) {
-  const ctx = document.getElementById(canvasId).getContext('2d');
-  if (chartVar) chartVar.destroy();
-
-  const remaining = Math.max(0, targetMax - value);
-
-  const newChart = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      datasets: [{
-        data: [value, remaining],
-        backgroundColor: [color, '#334155'],
-        borderWidth: 0
-      }]
-    },
-    options: {
-      cutout: '78%',
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { tooltip: { enabled: false } }
-    }
-  });
-
-  setChartVar(newChart);
-}
-
-function renderLedgerTable() {
-  const search = document.getElementById('ledger-search').value.toLowerCase();
-  const body = document.getElementById('ledger-body');
-  body.innerHTML = '';
-
-  const filtered = transactions.filter((t) =>
-    String(t.date).includes(search) ||
-    String(t.credited).includes(search) ||
-    String(t.netProfit.toFixed(2)).includes(search)
-  );
-
-  if (filtered.length === 0) {
-    body.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-slate-500 text-sm">No transaction records found.</td></tr>';
-    return;
-  }
-
-  filtered.forEach((t) => {
-    const tr = document.createElement('tr');
-    tr.className = 'hover:bg-slate-700/30 transition';
-
-    const bonusBadge = t.credited > 100000
-      ? `<span class="bg-purple-500/10 text-purple-400 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-semibold">+${(t.bonus25 || 0).toFixed(2)} USDT</span>`
-      : '<span class="text-slate-500 text-xs">-</span>';
-
-    tr.innerHTML = `
-      <td class="px-4 py-3 font-medium text-slate-200">${t.date}</td>
-      <td class="px-4 py-3 font-semibold text-white">${Number(t.credited).toLocaleString()} TZS</td>
-      <td class="px-4 py-3 text-emerald-400 font-semibold">${Number(t.usdt).toFixed(2)} USDT</td>
-      <td class="px-4 py-3 text-slate-300">₹${Number(t.googleRate).toFixed(2)}</td>
-      <td class="px-4 py-3 text-slate-300">₹${Number(t.binanceRate).toFixed(2)}</td>
-      <td class="px-4 py-3">${bonusBadge}</td>
-      <td class="px-4 py-3 font-bold text-emerald-400">+${Number(t.netProfit).toFixed(2)} USDT</td>
-      <td class="px-4 py-3 text-center">
-        <button onclick="deleteTx(${t.id})" class="text-slate-400 hover:text-rose-400 transition p-1"><i class="fas fa-trash-alt text-xs"></i></button>
-      </td>
-    `;
-
-    body.appendChild(tr);
-  });
-}
-
-function renderSummaryTables() {
-  const monthlyData = {};
-  const weeklyData = {};
-  const dailyData = {};
-
-  transactions.forEach((t) => {
-    const monthKey = t.date.substring(0, 7);
-    if (!monthlyData[monthKey]) monthlyData[monthKey] = { trades: 0, credited: 0, usdt: 0, bonus: 0, profit: 0 };
-    monthlyData[monthKey].trades++;
-    monthlyData[monthKey].credited += t.credited;
-    monthlyData[monthKey].usdt += t.usdt;
-    monthlyData[monthKey].bonus += t.bonus25 || 0;
-    monthlyData[monthKey].profit += t.netProfit;
-
-    const dayKey = t.date;
-    if (!dailyData[dayKey]) dailyData[dayKey] = { trades: 0, credited: 0, usdt: 0, bonus: 0, profit: 0 };
-    dailyData[dayKey].trades++;
-    dailyData[dayKey].credited += t.credited;
-    dailyData[dayKey].usdt += t.usdt;
-    dailyData[dayKey].bonus += t.bonus25 || 0;
-    dailyData[dayKey].profit += t.netProfit;
-
-    const d = new Date(t.date);
-    const firstDayOfYear = new Date(d.getFullYear(), 0, 1);
-    const pastDaysOfYear = (d - firstDayOfYear) / 86400000;
-    const weekNum = Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
-    const weekKey = `${d.getFullYear()} - Week ${weekNum}`;
-    if (!weeklyData[weekKey]) weeklyData[weekKey] = { trades: 0, credited: 0, usdt: 0, bonus: 0, profit: 0 };
-    weeklyData[weekKey].trades++;
-    weeklyData[weekKey].credited += t.credited;
-    weeklyData[weekKey].usdt += t.usdt;
-    weeklyData[weekKey].bonus += t.bonus25 || 0;
-    weeklyData[weekKey].profit += t.netProfit;
-  });
-
-  populateSummaryRows('summary-monthly-body', monthlyData);
-  populateSummaryRows('summary-weekly-body', weeklyData);
-  populateSummaryRows('summary-daily-body', dailyData);
-}
-
-function populateSummaryRows(elementId, dataObj) {
-  const tbody = document.getElementById(elementId);
-  tbody.innerHTML = '';
-
-  const keys = Object.keys(dataObj).sort().reverse();
-  if (keys.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-slate-500 text-xs">No transaction history available.</td></tr>';
-    return;
-  }
-
-  keys.forEach((key) => {
-    const item = dataObj[key];
-    const tr = document.createElement('tr');
-    tr.className = 'hover:bg-slate-700/30 transition';
-    tr.innerHTML = `
-      <td class="px-4 py-3 font-semibold text-slate-200">${key}</td>
-      <td class="px-4 py-3 text-slate-300">${item.trades} trades</td>
-      <td class="px-4 py-3 font-semibold text-white">${Number(item.credited).toLocaleString()} TZS</td>
-      <td class="px-4 py-3 text-emerald-400 font-medium">${Number(item.usdt).toFixed(2)} USDT</td>
-      <td class="px-4 py-3 text-purple-400 font-medium">+${Number(item.bonus).toFixed(2)} USDT</td>
-      <td class="px-4 py-3 text-right font-bold text-emerald-400">+${Number(item.profit).toFixed(2)} USDT</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-function switchTableTab(tab) {
-  document.getElementById('summary-monthly-view').classList.add('hidden');
-  document.getElementById('summary-weekly-view').classList.add('hidden');
-  document.getElementById('summary-daily-view').classList.add('hidden');
-
-  document.getElementById('tbl-btn-monthly').className = 'px-4 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition';
-  document.getElementById('tbl-btn-weekly').className = 'px-4 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition';
-  document.getElementById('tbl-btn-daily').className = 'px-4 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition';
-
-  if (tab === 'monthly-summary') {
-    document.getElementById('summary-monthly-view').classList.remove('hidden');
-    document.getElementById('tbl-btn-monthly').className = 'px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white transition';
-  } else if (tab === 'weekly-summary') {
-    document.getElementById('summary-weekly-view').classList.remove('hidden');
-    document.getElementById('tbl-btn-weekly').className = 'px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white transition';
-  } else if (tab === 'daily-summary') {
-    document.getElementById('summary-daily-view').classList.remove('hidden');
-    document.getElementById('tbl-btn-daily').className = 'px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white transition';
-  }
-}
-
-function switchChartTab(type) {
-  activeChartTab = type;
-  document.getElementById('tab-btn-monthly').className = 'px-3 py-1 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition';
-  document.getElementById('tab-btn-weekly').className = 'px-3 py-1 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition';
-  document.getElementById('tab-btn-daily').className = 'px-3 py-1 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition';
-
-  document.getElementById(`tab-btn-${type}`).className = 'px-3 py-1 text-xs font-semibold rounded-lg bg-blue-600 text-white transition';
-  renderPerformanceChart();
-}
-
-function renderPerformanceChart() {
-  const ctx = document.getElementById('performanceChart').getContext('2d');
-  if (chartInstance) chartInstance.destroy();
-
-  const mapData = {};
-  transactions.forEach((t) => {
-    let key = t.date;
-    if (activeChartTab === 'monthly') key = t.date.substring(0, 7);
-    else if (activeChartTab === 'weekly') {
-      const d = new Date(t.date);
-      const firstDayOfYear = new Date(d.getFullYear(), 0, 1);
-      const pastDaysOfYear = (d - firstDayOfYear) / 86400000;
-      const weekNum = Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
-      key = `W${weekNum}-${d.getFullYear()}`;
-    }
-
-    if (!mapData[key]) mapData[key] = { credited: 0, profit: 0 };
-    mapData[key].credited += t.credited;
-    mapData[key].profit += t.netProfit;
-  });
-
-  const labels = Object.keys(mapData).sort();
-  const creditedVals = labels.map((l) => mapData[l].credited);
-  const profitVals = labels.map((l) => mapData[l].profit);
-
-  chartInstance = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: labels.length ? labels : ['No Data'],
-      datasets: [
-        {
-          label: 'Total Net Profit (USDT)',
-          data: profitVals.length ? profitVals : [0],
-          backgroundColor: '#10b981',
-          borderRadius: 6,
-          yAxisID: 'yProfit'
-        },
-        {
-          label: 'Credited Volume (TZS)',
-          data: creditedVals.length ? creditedVals : [0],
-          backgroundColor: '#3b82f6',
-          borderRadius: 6,
-          yAxisID: 'yCredited'
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 } } }
-      },
-      scales: {
-        x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
-        yProfit: {
-          type: 'linear',
-          position: 'left',
-          ticks: { color: '#10b981' },
-          grid: { color: '#334155' },
-          title: { display: true, text: 'USDT Profit', color: '#10b981' }
-        },
-        yCredited: {
-          type: 'linear',
-          position: 'right',
-          ticks: { color: '#3b82f6' },
-          grid: { drawOnChartArea: false },
-          title: { display: true, text: 'TZS Credited Volume', color: '#3b82f6' }
-        }
-      }
-    }
-  });
-}
-
-function exportToExcel() {
-  if (transactions.length === 0) {
-    showToast('No transactions to export!', 'error');
-    return;
-  }
-
-  const wb = XLSX.utils.book_new();
-  const ledgerData = transactions.map((t) => ({
-    'Date': t.date,
-    'Credited (TZS)': t.credited,
-    'USDT Bought': t.usdt,
-    'Google Cost Rate (INR)': t.googleRate,
-    'Binance Sell Rate (INR)': t.binanceRate,
-    '2.5% Cut Added (USDT)': t.bonus25,
-    'Total Net Profit (USDT)': t.netProfit
-  }));
-
-  const wsLedger = XLSX.utils.json_to_sheet(ledgerData);
-  XLSX.utils.book_append_sheet(wb, wsLedger, 'Transaction Ledger');
-  XLSX.writeFile(wb, `TZS_USDT_Money_Exchange_Ledger_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  showToast('Excel file generated & downloaded!', 'success');
-}
-
-function showToast(msg, type = 'success') {
-  const toast = document.getElementById('toast');
-  const msgEl = document.getElementById('toast-message');
-  const iconEl = document.getElementById('toast-icon');
-
-  msgEl.innerText = msg;
-
-  if (type === 'error') {
-    toast.className = 'fixed top-5 right-5 z-50 transform transition-transform duration-300 bg-rose-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3';
-    iconEl.className = 'fas fa-exclamation-circle text-lg';
-  } else if (type === 'info') {
-    toast.className = 'fixed top-5 right-5 z-50 transform transition-transform duration-300 bg-blue-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3';
-    iconEl.className = 'fas fa-info-circle text-lg';
-  } else {
-    toast.className = 'fixed top-5 right-5 z-50 transform transition-transform duration-300 bg-emerald-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3';
-    iconEl.className = 'fas fa-check-circle text-lg';
-  }
-
-  toast.classList.remove('translate-x-full');
-  setTimeout(() => toast.classList.add('translate-x-full'), 3000);
-}
-
-window.onload = async () => {
-  setAuthMode('login');
-
-  if (useCloudStorage && window.supabase) {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    const { data, error } = await supabase.auth.getSession();
-    if (data?.session?.user) {
-      currentUser = data.session.user;
-      isUsingCloud = true;
-      await initializeSession();
-      return;
-    }
-  }
-
-  authShell.classList.remove('hidden');
-  appShell.classList.add('hidden');
-  fetchLiveGoogleRate();
-};
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TZS - USDT - INR Money Exchange Ledger</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen pb-12">
+
+  <div id="toast" class="fixed top-5 right-5 z-50 transform translate-x-full transition-transform duration-300 bg-emerald-600 text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3">
+    <i id="toast-icon" class="fas fa-check-circle text-lg"></i>
+    <span id="toast-message" class="font-medium text-sm">Action successful</span>
+  </div>
+
+  <div id="auth-shell" class="min-h-screen flex items-center justify-center px-4 py-10">
+    <div class="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-800/90 shadow-2xl shadow-slate-950/40 p-6">
+      <div class="flex items-center justify-center mb-6">
+        <div class="bg-blue-600 p-3 rounded-2xl text-white shadow-lg shadow-blue-500/20">
+          <i class="fas fa-coins text-2xl"></i>
+        </div>
+      </div>
+
+      <div class="text-center mb-6">
+        <h1 class="text-2xl font-bold text-white">TZS-USDT-INR Ledger</h1>
+        <p class="text-sm text-slate-400 mt-2">Secure account-based exchange tracking</p>
+      </div>
+
+      <div class="flex bg-slate-900 p-1 rounded-xl border border-slate-700 mb-6">
+        <button id="auth-login-tab" class="auth-tab flex-1 px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white transition">Login</button>
+        <button id="auth-signup-tab" class="auth-tab flex-1 px-3 py-2 rounded-lg text-sm font-semibold text-slate-400 transition">Create Account</button>
+      </div>
+
+      <form id="auth-form" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Email</label>
+          <input id="auth-email" type="email" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="name@example.com">
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Password</label>
+          <input id="auth-password" type="password" required minlength="6" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="At least 6 characters">
+        </div>
+
+        <button id="auth-submit-btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2">
+          <i class="fas fa-sign-in-alt"></i> <span>Login</span>
+        </button>
+      </form>
+
+      <div class="mt-4 text-center">
+        <button id="demo-mode-btn" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">Try local demo mode</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-shell" class="hidden">
+    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-40 shadow-md">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div class="flex items-center gap-3">
+          <div class="bg-blue-600 p-2.5 rounded-xl text-white shadow-lg shadow-blue-500/20">
+            <i class="fas fa-coins text-xl"></i>
+          </div>
+          <div>
+            <h1 class="text-xl font-bold tracking-tight text-white">TZS <i class="fas fa-arrow-right text-xs text-blue-400 mx-1"></i> USDT <i class="fas fa-arrow-right text-xs text-emerald-400 mx-1"></i> INR Dashboard</h1>
+            <p class="text-xs text-slate-400">Money Exchange Ledger & Automated Arbitrage Profit Tracker</p>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-2 flex items-center gap-3">
+            <div class="flex items-center gap-2">
+              <span class="relative flex h-2.5 w-2.5">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span class="text-xs font-semibold text-slate-400">Google USD/INR:</span>
+            </div>
+            <span id="live-fx-display" class="text-sm font-bold text-emerald-400">Fetching...</span>
+            <button onclick="fetchLiveGoogleRate()" title="Refresh FX Rate" class="text-slate-400 hover:text-white transition">
+              <i class="fas fa-sync-alt text-xs"></i>
+            </button>
+          </div>
+
+          <div id="user-tag" class="hidden text-xs text-slate-200 bg-slate-900 border border-slate-700 px-3 py-2 rounded-xl"></div>
+
+          <button onclick="logoutUser()" class="bg-slate-700 hover:bg-slate-600 text-white font-medium px-4 py-2 rounded-xl text-sm transition flex items-center gap-2">
+            <i class="fas fa-sign-out-alt"></i> Logout
+          </button>
+
+          <button onclick="exportToExcel()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-xl text-sm transition shadow-lg shadow-emerald-600/20 flex items-center gap-2">
+            <i class="fas fa-file-excel"></i> Export Excel
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div class="bg-slate-800 rounded-2xl p-6 border border-slate-700/60 shadow-lg flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Credited</span>
+            <div class="p-2 bg-blue-500/10 text-blue-400 rounded-lg"><i class="fas fa-wallet text-lg"></i></div>
+          </div>
+          <div class="mt-4">
+            <h2 id="kpi-total-credited" class="text-2xl font-bold text-white">0 TZS</h2>
+            <p class="text-xs text-slate-400 mt-1">Total TZS inflow received</p>
+          </div>
+          <div class="mt-4 pt-3 border-t border-slate-700/50 flex justify-between text-xs text-slate-400">
+            <span>Transactions: <strong id="kpi-tx-count" class="text-slate-200">0</strong></span>
+            <span>USDT Bought: <strong id="kpi-total-usdt" class="text-slate-200">0.00</strong></span>
+          </div>
+        </div>
+
+        <div class="bg-slate-800 rounded-2xl p-6 border border-slate-700/60 shadow-lg flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">2.5% Trade Cut (&gt;100k)</span>
+            <div class="p-2 bg-purple-500/10 text-purple-400 rounded-lg"><i class="fas fa-percentage text-lg"></i></div>
+          </div>
+          <div class="mt-4">
+            <h2 id="kpi-bonus-profit" class="text-2xl font-bold text-purple-400">0.00 USDT</h2>
+            <p class="text-xs text-slate-400 mt-1">Extra 2.5% profit on trades &gt; 100k TZS</p>
+          </div>
+          <div class="mt-4 pt-3 border-t border-slate-700/50 flex justify-between text-xs text-slate-400">
+            <span>Qualified Trades: <strong id="kpi-qualified-count" class="text-slate-200">0</strong></span>
+            <span class="text-emerald-400 font-medium">+2.5% Auto-Added</span>
+          </div>
+        </div>
+
+        <div class="bg-slate-800 rounded-2xl p-6 border border-slate-700/60 shadow-lg text-center flex flex-col justify-between">
+          <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Total Profit (USDT)</span>
+          <div class="gauge-container">
+            <canvas id="gaugeTotalProfit"></canvas>
+            <div class="gauge-center">
+              <span id="gauge-total-val" class="text-xl font-extrabold text-emerald-400">0.00</span>
+              <span class="block text-[10px] text-slate-400 font-medium">USDT Total</span>
+            </div>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Combined arbitrage + 2.5% cuts</p>
+        </div>
+
+        <div class="bg-slate-800 rounded-2xl p-6 border border-slate-700/60 shadow-lg text-center flex flex-col justify-between">
+          <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Avg Monthly Profit</span>
+          <div class="gauge-container">
+            <canvas id="gaugeAvgMonthlyProfit"></canvas>
+            <div class="gauge-center">
+              <span id="gauge-avg-val" class="text-xl font-extrabold text-amber-400">0.00</span>
+              <span class="block text-[10px] text-slate-400 font-medium">USDT / Month</span>
+            </div>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Average earnings per active month</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div class="lg:col-span-1 bg-slate-800 rounded-2xl p-6 border border-slate-700/60 shadow-lg flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between pb-4 mb-4 border-b border-slate-700">
+              <h3 class="text-lg font-bold text-white flex items-center gap-2"><i class="fas fa-plus-circle text-blue-400"></i> Record New Exchange</h3>
+              <span class="text-xs bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2.5 py-1 rounded-full font-medium">Live Rates</span>
+            </div>
+
+            <form id="tx-form" onsubmit="handleFormSubmit(event)" class="space-y-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Transaction Date</label>
+                <input type="date" id="tx-date" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Credited Amount (Tanzanian Shilling - TZS)</label>
+                <div class="relative">
+                  <input type="number" step="any" id="tx-credited" required placeholder="e.g. 250000" oninput="calculateLiveProfitPreview()" class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-3.5 pr-12 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <span class="absolute right-3 top-2.5 text-xs font-semibold text-slate-500">TZS</span>
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">USDT Received / Purchased</label>
+                <div class="relative">
+                  <input type="number" step="any" id="tx-usdt" required placeholder="e.g. 100.00" oninput="calculateLiveProfitPreview()" class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-3.5 pr-14 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <span class="absolute right-3 top-2.5 text-xs font-semibold text-emerald-400">USDT</span>
+                </div>
+              </div>
+
+              <div>
+                <div class="flex justify-between items-center mb-1">
+                  <label class="block text-xs font-semibold text-slate-300">Google Cost Rate (INR/USDT)</label>
+                  <span class="text-[10px] text-emerald-400 font-medium"><i class="fas fa-magic"></i> Auto-fetched</span>
+                </div>
+                <div class="relative">
+                  <input type="number" step="0.01" min="1" max="100" id="tx-google-cost" required placeholder="86.42" oninput="calculateLiveProfitPreview()" class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-3.5 pr-12 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <span class="absolute right-3 top-2.5 text-xs font-semibold text-slate-500">INR ₹</span>
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Binance Selling Rate (INR/USDT)</label>
+                <div class="relative">
+                  <input type="number" step="0.01" min="1" max="100" id="tx-binance-sell" required placeholder="e.g. 89.50" oninput="calculateLiveProfitPreview()" class="w-full bg-slate-900 border border-slate-700 rounded-xl pl-3.5 pr-12 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <span class="absolute right-3 top-2.5 text-xs font-semibold text-slate-500">INR ₹</span>
+                </div>
+              </div>
+
+              <div class="bg-slate-900/90 border border-slate-700 rounded-xl p-4 space-y-2 text-xs">
+                <div class="flex justify-between text-slate-400"><span>Arbitrage Margin:</span><span id="prev-margin" class="text-slate-200 font-medium">0.00 USDT</span></div>
+                <div class="flex justify-between text-slate-400"><span>2.5% Bonus (&gt;100k TZS):</span><span id="prev-bonus" class="text-purple-400 font-medium">0.00 USDT</span></div>
+                <div class="pt-2 border-t border-slate-800 flex justify-between font-bold text-sm"><span class="text-slate-200">Total Net Profit:</span><span id="prev-total-profit" class="text-emerald-400">0.00 USDT</span></div>
+              </div>
+
+              <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2"><i class="fas fa-save"></i> Log Transaction</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="lg:col-span-2 bg-slate-800 rounded-2xl p-6 border border-slate-700/60 shadow-lg flex flex-col justify-between">
+          <div>
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-700">
+              <div>
+                <h3 class="text-lg font-bold text-white flex items-center gap-2"><i class="fas fa-chart-line text-emerald-400"></i> Financial Performance Analytics</h3>
+                <p class="text-xs text-slate-400">Credited TZS volume vs USDT net profits gained over time</p>
+              </div>
+              <div class="flex bg-slate-900 p-1 rounded-xl border border-slate-700 self-start sm:self-auto">
+                <button onclick="switchChartTab('monthly')" id="tab-btn-monthly" class="px-3 py-1 text-xs font-semibold rounded-lg bg-blue-600 text-white transition">Monthly</button>
+                <button onclick="switchChartTab('weekly')" id="tab-btn-weekly" class="px-3 py-1 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">Weekly</button>
+                <button onclick="switchChartTab('daily')" id="tab-btn-daily" class="px-3 py-1 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">Daily</button>
+              </div>
+            </div>
+
+            <div class="mt-6 relative h-[320px]"><canvas id="performanceChart"></canvas></div>
+          </div>
+
+          <div class="mt-4 pt-4 border-t border-slate-700/50 text-xs text-slate-400 flex flex-wrap justify-between gap-2">
+            <span><i class="fas fa-info-circle text-blue-400 mr-1"></i> Net Profit includes Binance spread arbitrage + automatic 2.5% cut on trades above 100,000 TZS.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-800 rounded-2xl border border-slate-700/60 shadow-lg overflow-hidden">
+        <div class="p-6 border-b border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h3 class="text-lg font-bold text-white flex items-center gap-2"><i class="fas fa-table text-amber-400"></i> Aggregated Performance Summaries</h3>
+            <p class="text-xs text-slate-400">Breakdown of Total Credited (TZS) & Total Net Profit (USDT)</p>
+          </div>
+
+          <div class="flex bg-slate-900 p-1 rounded-xl border border-slate-700">
+            <button onclick="switchTableTab('monthly-summary')" id="tbl-btn-monthly" class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white transition">Monthly Breakdown</button>
+            <button onclick="switchTableTab('weekly-summary')" id="tbl-btn-weekly" class="px-4 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">Weekly Breakdown</button>
+            <button onclick="switchTableTab('daily-summary')" id="tbl-btn-daily" class="px-4 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">Daily Breakdown</button>
+          </div>
+        </div>
+
+        <div id="summary-monthly-view" class="overflow-x-auto p-4">
+          <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-900 text-xs uppercase text-slate-400 font-semibold">
+              <tr>
+                <th class="px-4 py-3 rounded-l-lg">Month / Year</th>
+                <th class="px-4 py-3">Total Trades</th>
+                <th class="px-4 py-3">Total Credited (TZS)</th>
+                <th class="px-4 py-3">Total USDT Volume</th>
+                <th class="px-4 py-3">2.5% Bonus Earned</th>
+                <th class="px-4 py-3 text-right rounded-r-lg">Total Profit (USDT)</th>
+              </tr>
+            </thead>
+            <tbody id="summary-monthly-body" class="divide-y divide-slate-700/50"></tbody>
+          </table>
+        </div>
+
+        <div id="summary-weekly-view" class="overflow-x-auto p-4 hidden">
+          <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-900 text-xs uppercase text-slate-400 font-semibold">
+              <tr>
+                <th class="px-4 py-3 rounded-l-lg">Week Period</th>
+                <th class="px-4 py-3">Total Trades</th>
+                <th class="px-4 py-3">Total Credited (TZS)</th>
+                <th class="px-4 py-3">Total USDT Volume</th>
+                <th class="px-4 py-3">2.5% Bonus Earned</th>
+                <th class="px-4 py-3 text-right rounded-r-lg">Total Profit (USDT)</th>
+              </tr>
+            </thead>
+            <tbody id="summary-weekly-body" class="divide-y divide-slate-700/50"></tbody>
+          </table>
+        </div>
+
+        <div id="summary-daily-view" class="overflow-x-auto p-4 hidden">
+          <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-900 text-xs uppercase text-slate-400 font-semibold">
+              <tr>
+                <th class="px-4 py-3 rounded-l-lg">Date</th>
+                <th class="px-4 py-3">Total Trades</th>
+                <th class="px-4 py-3">Total Credited (TZS)</th>
+                <th class="px-4 py-3">Total USDT Volume</th>
+                <th class="px-4 py-3">2.5% Bonus Earned</th>
+                <th class="px-4 py-3 text-right rounded-r-lg">Total Profit (USDT)</th>
+              </tr>
+            </thead>
+            <tbody id="summary-daily-body" class="divide-y divide-slate-700/50"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="bg-slate-800 rounded-2xl border border-slate-700/60 shadow-lg overflow-hidden">
+        <div class="p-6 border-b border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h3 class="text-lg font-bold text-white flex items-center gap-2"><i class="fas fa-list-alt text-blue-400"></i> Money Exchange Transaction Ledger</h3>
+            <p class="text-xs text-slate-400">All registered exchange entries with individual USDT profit logs</p>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <input type="text" id="ledger-search" placeholder="Search entries..." oninput="renderAll()" class="bg-slate-900 border border-slate-700 text-xs text-white px-3.5 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <button onclick="clearAllData()" class="text-xs text-rose-400 hover:text-rose-300 border border-rose-500/30 px-3 py-2 rounded-xl bg-rose-500/10 transition"><i class="fas fa-trash-alt mr-1"></i> Clear Ledger</button>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto p-4">
+          <table class="w-full text-left text-sm text-slate-300">
+            <thead class="bg-slate-900 text-xs uppercase text-slate-400 font-semibold">
+              <tr>
+                <th class="px-4 py-3 rounded-l-lg">Date</th>
+                <th class="px-4 py-3">Credited (TZS)</th>
+                <th class="px-4 py-3">USDT Bought</th>
+                <th class="px-4 py-3">Google Rate</th>
+                <th class="px-4 py-3">Binance Rate</th>
+                <th class="px-4 py-3">2.5% Bonus</th>
+                <th class="px-4 py-3">Net Profit (USDT)</th>
+                <th class="px-4 py-3 text-center rounded-r-lg">Action</th>
+              </tr>
+            </thead>
+            <tbody id="ledger-body" class="divide-y divide-slate-700/50"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
